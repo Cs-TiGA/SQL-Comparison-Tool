@@ -1,5 +1,4 @@
-import tkinter as tk
-from tkinter import messagebox, scrolledtext
+from flask import Flask, request, jsonify
 import psycopg2
 import google.generativeai as gemini
 import openai
@@ -18,85 +17,46 @@ gemini_model = gemini.GenerativeModel("gemini-1.5-flash")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
+app = Flask(__name__)
 main_query = ""  # Define globally
 main_query_uploaded = False  # Track if the main query has been uploaded
 
-def gemini_generate(prompt):
-    """
-    Generate content using Gemini API.
-    """
-    try:
-        response = gemini_model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        messagebox.showerror("Gemini API Error", f"Error with Gemini API: {e}")
-        return "Error with Gemini API."
 
-def openai_generate(prompt, role):
-    """
-    Generate content using OpenAI API.
-    """
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4-turbo",
-            messages=[
-                {"role": "system", "content": role},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        messagebox.showerror("OpenAI API Error", f"Error with OpenAI API: {e}")
-        return "Error with OpenAI API."
-
+@app.route('/upload_main_query', methods=['POST'])
 def upload_main_query():
     global main_query, main_query_uploaded
     if main_query_uploaded:
-        messagebox.showerror("Permission Denied", "Main query has already been uploaded and cannot be changed.")
-        return
+        return jsonify({"error": "Main query has already been uploaded and cannot be changed."}), 400
 
-    main_query = main_query_display.get("1.0", tk.END).strip()
+    main_query = request.json.get('main_query', '').strip()
     if not main_query:
-        messagebox.showerror("Error", "Please enter the main query before uploading.")
-        return
+        return jsonify({"error": "Please enter the main query before uploading."}), 400
 
     main_query_uploaded = True
-    messagebox.showinfo("Upload Successful", "Main query has been uploaded.")
+    return jsonify({"message": "Main query has been uploaded."})
 
-def toggle_main_query_visibility():
-    if not main_query_uploaded:
-        messagebox.showerror("Permission Denied", "You must upload the main query first.")
-        return
 
-    if hide_button.config('text')[-1] == 'Hide':
-        main_query_display.delete("1.0", tk.END)
-        main_query_display.insert(tk.END, "[Main query is hidden]")
-        main_query_display.configure(state=tk.DISABLED)
-        hide_button.config(text='Show')
-    else:
-        main_query_display.configure(state=tk.NORMAL)
-        main_query_display.delete("1.0", tk.END)
-        main_query_display.insert(tk.END, main_query)
-        hide_button.config(text='Hide')
-
-def execute_solution_query(event=None):
+@app.route('/execute_solution_query', methods=['POST'])
+def execute_solution_query():
     global main_query
     if not main_query_uploaded:
-        messagebox.showerror("Permission Denied", "Main query has not been uploaded yet.")
-        return
+        return jsonify({"error": "Main query has not been uploaded yet."}), 400
 
-    solution_query = solution_query_display.get("1.0", tk.END).strip()
+    solution_query = request.json.get('solution_query', '').strip()
     if not solution_query:
-        messagebox.showerror("Error", "Please enter the solution query first.")
-        return
+        return jsonify({"error": "Please enter the solution query first."}), 400
 
-    main_query_display.configure(state=tk.NORMAL)
-    main_query_display.delete("1.0", tk.END)
-    main_query_display.insert(tk.END, main_query)
-    execute_queries(main_query, solution_query)
-    compare_queries(main_query, solution_query)
-    provide_feedback(main_query, solution_query)
-    toggle_main_query_visibility()
+    main_output, solution_output = execute_queries(main_query, solution_query)
+    comparison = compare_queries(main_query, solution_query)
+    feedback = provide_feedback(main_query, solution_query)
+
+    return jsonify({
+        "main_output": main_output,
+        "solution_output": solution_output,
+        "comparison": comparison,
+        "feedback": feedback
+    })
+
 
 def execute_queries(query1, query2):
     try:
@@ -111,31 +71,20 @@ def execute_queries(query1, query2):
         # Execute Main Query
         cursor.execute(query1)
         results_query1 = cursor.fetchall()
-        main_output_display.delete("1.0", tk.END)
-        main_output_display.insert(tk.END, "Main Query Output:\n")
-        if not results_query1:
-            main_output_display.insert(tk.END, "No results returned for the main query.\n")
-        else:
-            for row in results_query1:
-                main_output_display.insert(tk.END, f"{row}\n")
 
         # Execute Solution Query
         cursor.execute(query2)
         results_query2 = cursor.fetchall()
-        solution_output_display.delete("1.0", tk.END)
-        solution_output_display.insert(tk.END, "Solution Query Output:\n")
-        if not results_query2:
-            solution_output_display.insert(tk.END, "No results returned for the solution query.\n")
-        else:
-            for row in results_query2:
-                solution_output_display.insert(tk.END, f"{row}\n")
+
+        return results_query1, results_query2
 
     except Exception as error:
-        messagebox.showerror("Database Error", f"Error executing queries: {error}")
+        return str(error), None
     finally:
         if connection:
             cursor.close()
             connection.close()
+
 
 def compare_queries(query1, query2):
     prompt = f"""
@@ -152,12 +101,8 @@ def compare_queries(query1, query2):
     2. Expected result set differences.
     3. Performance considerations and optimizations.
     """
-    comparison = openai_generate(prompt, role="You are an SQL analysis expert.")
+    return openai_generate(prompt, role="You are an SQL analysis expert.")
 
-    # Display comparison
-    comparison_display.delete("1.0", tk.END)
-    comparison_display.insert(tk.END, "Query Comparison:\n")
-    comparison_display.insert(tk.END, comparison)
 
 def provide_feedback(query1, query2):
     prompt = f"""
@@ -175,63 +120,30 @@ def provide_feedback(query1, query2):
     3. Fix syntax or structural issues.
     4. Optimize the query for better efficiency.
     """
-    feedback = gemini_generate(prompt)
+    return gemini_generate(prompt)
 
-    # Display feedback for improvement
-    feedback_display.delete("1.0", tk.END)
-    feedback_display.insert(tk.END, "Feedback for Improvement:\n")
-    feedback_display.insert(tk.END, feedback)
 
-# GUI setup
-root = tk.Tk()
-root.title("SQL Query Comparison Tool with Dual AI")
-root.geometry("900x800")
+def gemini_generate(prompt):
+    try:
+        response = gemini_model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Error with Gemini API: {e}"
 
-# Main Query Frame
-main_frame = tk.Frame(root)
-main_frame.pack(pady=5)
-tk.Label(main_frame, text="Main Query").grid(row=0, column=0, padx=5)
-hide_button = tk.Button(main_frame, text="Hide", command=toggle_main_query_visibility)
-hide_button.grid(row=0, column=1, padx=5)
-tk.Button(main_frame, text="Upload", command=upload_main_query).grid(row=0, column=2, padx=5)
-main_query_display = scrolledtext.ScrolledText(main_frame, height=5, width=80)
-main_query_display.grid(row=1, columnspan=3, pady=5)
-main_query_display.bind("<Return>", execute_solution_query)
 
-# Solution Query Frame
-solution_frame = tk.Frame(root)
-solution_frame.pack(pady=5)
-tk.Label(solution_frame, text="Solution Query").grid(row=0, column=0, padx=5)
-solution_query_display = scrolledtext.ScrolledText(solution_frame, height=5, width=80)
-solution_query_display.grid(row=1, columnspan=2, pady=5)
-solution_query_display.bind("<Return>", execute_solution_query)
+def openai_generate(prompt, role):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4-turbo",
+            messages=[
+                {"role": "system", "content": role},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Error with OpenAI API: {e}"
 
-# Main Output Frame
-main_output_frame = tk.Frame(root)
-main_output_frame.pack(pady=5)
-tk.Label(main_output_frame, text="Main Query Output").pack()
-main_output_display = scrolledtext.ScrolledText(main_output_frame, height=5, width=80)
-main_output_display.pack()
 
-# Solution Output Frame
-solution_output_frame = tk.Frame(root)
-solution_output_frame.pack(pady=5)
-tk.Label(solution_output_frame, text="Solution Query Output").pack()
-solution_output_display = scrolledtext.ScrolledText(solution_output_frame, height=5, width=80)
-solution_output_display.pack()
-
-# Comparison Display Frame
-comparison_frame = tk.Frame(root)
-comparison_frame.pack(pady=5)
-tk.Label(comparison_frame, text="Query Comparison").pack()
-comparison_display = scrolledtext.ScrolledText(comparison_frame, height=10, width=80)
-comparison_display.pack()
-
-# Feedback Display Frame
-feedback_frame = tk.Frame(root)
-feedback_frame.pack(pady=5)
-tk.Label(feedback_frame, text="Feedback for Improvement").pack()
-feedback_display = scrolledtext.ScrolledText(feedback_frame, height=10, width=80)
-feedback_display.pack()
-
-root.mainloop()
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.getenv("PORT", 5000)))
