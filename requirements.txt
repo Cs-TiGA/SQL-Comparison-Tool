@@ -2,6 +2,7 @@ psycopg2
 flask
 openai
 google-generativeai
+python-dotenv
 rembg
 pillow
 gunicorn
